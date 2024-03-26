@@ -1,0 +1,36 @@
+# This is all done in WSL, so these are linux commands
+# The working directory is '12.11.2022 data'
+
+# Make a folder for the fastqc results
+mkdir ./raw_fastq_files/fastqc_results/
+# Run fastqc (this was very slow so I ended up actually running it in Windows powershell with the `perl fastqc` command, but this should normally work)
+fastqc ./raw_fastq_files/*fastq.gz -t 24 -o ./raw_fastq_files/fastqc_results/
+# MultiQC then aggregates the results into a great web page that's easy to parse through
+multiqc ./raw_fastq_files/fastqc_results/
+# Data looks pretty good.
+
+# Now we'll process the files (remove low quality reads, too many Ns, too short, and trim adapters). We're leaving duplicates in.
+mkdir processed_fastq_files
+mkdir processed_fastq_files/fastp_reports
+
+# We are using fastp to do this, using 16 threads with -w (it's max is 16), and saving the output so we can visualize it later with MultiQC (it needs to be of the format *fastp.json)
+for file in raw_fastq_files/*R1_001.fastq.gz; do fastp -i $file -I ${file::-14}2_001.fastq.gz -o processed_fastq_files/${file:16:40} -O processed_fastq_files/${file:16:22}2_001.fastq.gz -w 16 -h processed_fastq_files/fastp_reports/${file:16:-24}.html -j processed_fastq_files/fastp_reports/${file:16:-24}fastp.json; done
+
+# Now we can rename the files, I did it in this way, but it doesn't matter. This doesn't necessarily need to be done right now either
+# I made a csv file (try not to use excel or you might have issues I had)
+# to do this first `cd` into the processed_fastq_files folder then run this
+awk -F',' 'system("mv " $1 " " $2)' filename_change.csv
+
+# Make a new folder for alignments
+mkdir alignments
+# To align the newly processed files we'll use STAR
+# First we need to download genome files and annotations for mouse from genbank, gunzip them (not necessary) and then use them to generate an index for STAR
+STAR --runThreadN 24 --runMode genomeGenerate --genomeDir alignments/STAR_index --genomeFastaFiles alignments/GRCm39.primary_assembly.genome.fa --sjdbGTFfile alignments/gencode.vM31.primary_assembly.annotation.gtf --sjdbOverhang 150
+
+# Here's the for loop to run all the alignments giving good looking names for everything
+# Note that I had to run `ulimit -n 1000` to allow more files to be open, and I had to add in --outTmpDir so it would work in WSL, and I added `--readFilesComman zcat` since it's reading in .fastq.gz files instead of .fastq files. Also it keeps the genome in memory so it doesn't need to reload it every time. Make sure to remove it though.
+for file in processed_fastq_files/*R1.fastq.gz; do STAR --runThreadN 24 --genomeDir alignments/STAR_index --genomeLoad LoadAndKeep --limitBAMsortRAM 10000000000 --readFilesIn $file ${file::-10}2.fastq.gz --outFileNamePrefix alignments/${file:22:-12}. --outSAMtype BAM SortedByCoordinate --quantMode GeneCounts --readFilesCommand zcat --outTmpDir /tmp/STAR; done
+# Might have to remove /tmp/STAR if you have to rerun this since it remakes the folder each time `rm /tmp/STAR/ -r`
+
+# Then don't forget to remove the index from memory with this command
+STAR --genomeDir alignments/STAR_index --genomeLoad Remove
